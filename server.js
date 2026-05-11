@@ -6,17 +6,15 @@ app.use((req, res, next) => {
   next();
 });
 
-// Fetch latest Roundhill declaration from Cboe
-// Tries the last 14 days to find the most recent declaration
+// Fetch ALL Roundhill declarations from last 14 days
 app.get('/roundhill', async (req, res) => {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0',
     'Accept': 'text/html,application/xhtml+xml',
   };
 
-  // Try each of the last 14 days to find the most recent declaration
   const today = new Date();
-  let found = null;
+  const allEtfs = {};  // keyed by ticker, keeps most recent entry
 
   for (let daysBack = 0; daysBack <= 14; daysBack++) {
     const d = new Date(today);
@@ -28,45 +26,43 @@ app.get('/roundhill', async (req, res) => {
       const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
       const html = await resp.text();
 
-      // Look for table rows with dividend data
       const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
-      const results = [];
 
       for (const row of rows) {
         const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
           .map(c => c[1].replace(/<[^>]+>/g, '').trim());
 
-        // Valid row has ticker, name, ex-date, record-date, payable-date, amount
         if (cells.length >= 6 && cells[0].match(/^[A-Z]{2,5}$/) && cells[2].match(/\d{4}-\d{2}-\d{2}/)) {
-          results.push({
-            ticker:       cells[0],
-            name:         cells[1],
-            exDate:       cells[2],
-            recordDate:   cells[3],
-            payableDate:  cells[4],
-            amount:       parseFloat(cells[5].replace('$', '')),
-            declaredDate: dateStr,
-          });
+          const ticker = cells[0];
+          // Only add if not already found (first occurrence = most recent)
+          if (!allEtfs[ticker]) {
+            allEtfs[ticker] = {
+              ticker,
+              name:         cells[1],
+              exDate:       cells[2],
+              recordDate:   cells[3],
+              payableDate:  cells[4],
+              amount:       parseFloat(cells[5].replace('$', '')),
+              declaredDate: dateStr,
+            };
+          }
         }
-      }
-
-      if (results.length > 0) {
-        found = { declaredDate: dateStr, etfs: results };
-        break;
       }
     } catch(e) {
       continue;
     }
+    // Small delay to be polite to Cboe
+    await new Promise(r => setTimeout(r, 100));
   }
 
-  if (found) {
-    res.json(found);
+  const etfs = Object.values(allEtfs).sort((a, b) => a.ticker.localeCompare(b.ticker));
+
+  if (etfs.length > 0) {
+    res.json({ count: etfs.length, etfs });
   } else {
-    res.status(404).json({ error: 'No Roundhill declaration found in last 14 days' });
+    res.status(404).json({ error: 'No Roundhill declarations found in last 14 days' });
   }
 });
 
-// Health check
 app.get('/', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
-
 app.listen(process.env.PORT || 3000);
