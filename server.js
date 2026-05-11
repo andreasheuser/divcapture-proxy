@@ -6,7 +6,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Fetch ALL Roundhill declarations from last 14 days
+// ── ROUNDHILL: Fetch all declarations from last 14 days ──────────
 app.get('/roundhill', async (req, res) => {
   const headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0',
@@ -14,7 +14,7 @@ app.get('/roundhill', async (req, res) => {
   };
 
   const today = new Date();
-  const allEtfs = {};  // keyed by ticker, keeps most recent entry
+  const allEtfs = {};
 
   for (let daysBack = 0; daysBack <= 14; daysBack++) {
     const d = new Date(today);
@@ -25,7 +25,6 @@ app.get('/roundhill', async (req, res) => {
     try {
       const resp = await fetch(url, { headers, signal: AbortSignal.timeout(8000) });
       const html = await resp.text();
-
       const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
 
       for (const row of rows) {
@@ -34,7 +33,6 @@ app.get('/roundhill', async (req, res) => {
 
         if (cells.length >= 6 && cells[0].match(/^[A-Z]{2,5}$/) && cells[2].match(/\d{4}-\d{2}-\d{2}/)) {
           const ticker = cells[0];
-          // Only add if not already found (first occurrence = most recent)
           if (!allEtfs[ticker]) {
             allEtfs[ticker] = {
               ticker,
@@ -51,12 +49,10 @@ app.get('/roundhill', async (req, res) => {
     } catch(e) {
       continue;
     }
-    // Small delay to be polite to Cboe
     await new Promise(r => setTimeout(r, 100));
   }
 
   const etfs = Object.values(allEtfs).sort((a, b) => a.ticker.localeCompare(b.ticker));
-
   if (etfs.length > 0) {
     res.json({ count: etfs.length, etfs });
   } else {
@@ -64,5 +60,27 @@ app.get('/roundhill', async (req, res) => {
   }
 });
 
+// ── PRICE FALLBACK: Yahoo Finance for tickers Finnhub doesn't cover ──
+app.get('/price/:ticker', async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`;
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0',
+        'Accept': 'application/json',
+      },
+      signal: AbortSignal.timeout(8000)
+    });
+    const json = await resp.json();
+    const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice || null;
+    res.json({ ticker, price });
+  } catch(e) {
+    res.status(500).json({ ticker, price: null, error: e.message });
+  }
+});
+
+// ── HEALTH CHECK ─────────────────────────────────────────────────
 app.get('/', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
+
 app.listen(process.env.PORT || 3000);
