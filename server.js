@@ -105,7 +105,6 @@ app.get('/yieldmax', async (req, res) => {
 // ── NEOS: Fetch latest monthly distribution from GlobeNewsWire ───
 app.get('/neos', async (req, res) => {
   try {
-    // Search GNW for latest NEOS announcement
     const gnwSearch = await fetch('https://www.globenewswire.com/en/search/keyword/NEOS%20Investments%20Announces', {
       headers: HEADERS, signal: AbortSignal.timeout(15000)
     });
@@ -120,7 +119,6 @@ app.get('/neos', async (req, res) => {
     const articleResp = await fetch(articleUrl, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
     const html = await articleResp.text();
 
-    // Parse dates
     const exMatch   = html.match(/[Ee]x[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
     const payMatch  = html.match(/[Pp]ay(?:able|ment)?[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
     const declMatch = html.match(/[Dd]eclar(?:ed|ation)[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
@@ -131,7 +129,6 @@ app.get('/neos', async (req, res) => {
       return isNaN(d) ? null : d.toISOString().split('T')[0];
     };
 
-    // Parse ticker amounts
     const etfs = [];
     const tickers = ['SPYI','QQQI','IWMI','QQQH','BTCI','HYBI','BNDI','CSHI','TLTI','IYRI','SPYH','IAUI','NIHI','NEHI','NLSI','MLPI','XSPI','XQQI','XBCI'];
     tickers.forEach(ticker => {
@@ -150,6 +147,38 @@ app.get('/neos', async (req, res) => {
 
   } catch(e) {
     res.status(500).json({ error: e.message, etfs: [] });
+  }
+});
+
+// ── PRICE HISTORY: 90 days daily OHLC via Yahoo Finance ──────────
+app.get('/history/:ticker', async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  try {
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=3mo`;
+    const resp = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(10000)
+    });
+    const json = await resp.json();
+    const result = json?.chart?.result?.[0];
+    if (!result) return res.json({ ticker, prices: [] });
+
+    const timestamps = result.timestamp || [];
+    const closes = result.indicators?.quote?.[0]?.close || [];
+
+    const prices = [];
+    timestamps.forEach((ts, i) => {
+      if (closes[i] != null) {
+        prices.push({
+          date: new Date(ts * 1000).toISOString().split('T')[0],
+          close: Math.round(closes[i] * 10000) / 10000,
+        });
+      }
+    });
+
+    res.json({ ticker, prices });
+  } catch(e) {
+    res.status(500).json({ ticker, prices: [], error: e.message });
   }
 });
 
