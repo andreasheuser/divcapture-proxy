@@ -11,83 +11,47 @@ const HEADERS = {
   'Accept': 'text/html,application/xhtml+xml',
 };
 
-// ── ROUNDHILL: PRNewswire ────────────────────────────────────────
+// ── ROUNDHILL: Cboe scraper (21-day window handles holiday shifts) ─
 app.get('/roundhill', async (req, res) => {
-  try {
-    const searchResp = await fetch('https://www.prnewswire.com/rss/news-releases-list.rss?category=roundhill', {
-      headers: HEADERS, signal: AbortSignal.timeout(15000)
-    });
-    let articleUrl = null;
+  const today = new Date();
+  const allEtfs = {};
 
-    if (searchResp.ok) {
-      const rssText = await searchResp.text();
-      const linkMatch = rssText.match(/<link>([^<]*roundhill[^<]*declares[^<]*)<\/link>/i)
-                     || rssText.match(/<link><!\[CDATA\[([^\]]*roundhill[^\]]*declares[^\]]*)\]\]><\/link>/i);
-      if (linkMatch) articleUrl = linkMatch[1];
-    }
+  for (let daysBack = 0; daysBack <= 21; daysBack++) {
+    const d = new Date(today);
+    d.setDate(d.getDate() - daysBack);
+    const dateStr = d.toISOString().split('T')[0];
+    const url = `https://www.cboe.com/us/equities/notices/dividends/details/?firm_name=Roundhill+Financial+Inc.&declaration_dt=${dateStr}`;
 
-    // Fallback: search PRNewswire directly
-    if (!articleUrl) {
-      const searchPage = await fetch('https://www.prnewswire.com/news-releases/news-releases-list.html?company=roundhill', {
-        headers: HEADERS, signal: AbortSignal.timeout(15000)
-      });
-      const searchHtml = await searchPage.text();
-      const linkMatch = searchHtml.match(/href="(\/news-releases\/[^"]*roundhill[^"]*declares[^"]*\.html)"/i)
-                     || searchHtml.match(/href="(\/news-releases\/[^"]*roundhill[^"]*distribution[^"]*\.html)"/i);
-      if (linkMatch) articleUrl = 'https://www.prnewswire.com' + linkMatch[1];
-    }
+    try {
+      const resp = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) });
+      const html = await resp.text();
+      const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
 
-    if (!articleUrl) {
-      return res.status(404).json({ error: 'No Roundhill declarations found on PRNewswire', etfs: [] });
-    }
-    const articleResp = await fetch(articleUrl, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
-    const html = await articleResp.text();
-
-    const exMatch   = html.match(/[Ee]x[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
-    const payMatch  = html.match(/[Pp]ay(?:able|ment)?[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
-    const declMatch = html.match(/[Dd]eclar(?:ed|ation)[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
-
-    const parseDateStr = (s) => {
-      if (!s) return null;
-      const d = new Date(s.replace(',', ''));
-      return isNaN(d) ? null : d.toISOString().split('T')[0];
-    };
-
-    const exDate       = parseDateStr(exMatch?.[1]);
-    const payableDate  = parseDateStr(payMatch?.[1]);
-    const declaredDate = parseDateStr(declMatch?.[1]);
-
-    const gnwEtfs = [];
-    const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
-    for (const row of rows) {
-      const cells = [...row[1].matchAll(/<t[dh][^>]*>([\s\S]*?)<\/t[dh]>/gi)]
-        .map(c => c[1].replace(/<[^>]+>/g,'').replace(/&amp;/g,'&').replace(/&nbsp;/g,' ').trim());
-      if (cells.length >= 2) {
-        const ticker = cells[0].replace(/\*/g,'').trim();
-        const amountCell = cells.find(c => /^\$?[\d.]+$/.test(c.trim()));
-        if (ticker.match(/^[A-Z]{2,5}$/) && amountCell) {
-          gnwEtfs.push({
-            ticker,
-            name: ticker,
-            exDate,
-            payableDate,
-            declaredDate,
-            amount: parseFloat(amountCell.replace('$','')),
-            source: 'globenewswire',
-          });
+      for (const row of rows) {
+        const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
+          .map(c => c[1].replace(/<[^>]+>/g, '').trim());
+        if (cells.length >= 6 && cells[0].match(/^[A-Z]{2,5}$/) && cells[2].match(/\d{4}-\d{2}-\d{2}/)) {
+          if (!allEtfs[cells[0]]) {
+            allEtfs[cells[0]] = {
+              ticker: cells[0], name: cells[1],
+              exDate: cells[2], recordDate: cells[3],
+              payableDate: cells[4], amount: parseFloat(cells[5].replace('$', '')),
+              declaredDate: dateStr,
+              source: 'cboe',
+            };
+          }
         }
       }
-    }
-
-    if (gnwEtfs.length > 0) {
-      return res.json({ count: gnwEtfs.length, etfs: gnwEtfs, sourceUrl: articleUrl });
-    }
-
-    res.status(404).json({ error: 'No Roundhill declarations found on PRNewswire', etfs: [] });
-
-  } catch(e) {
-    res.status(500).json({ error: e.message, etfs: [] });
+    } catch(e) { continue; }
+    await new Promise(r => setTimeout(r, 100));
   }
+
+  const etfs = Object.values(allEtfs).sort((a, b) => a.ticker.localeCompare(b.ticker));
+  if (etfs.length > 0) {
+    return res.json({ count: etfs.length, etfs });
+  }
+
+  return res.status(404).json({ error: 'No Roundhill declarations found on Cboe in last 21 days', etfs: [] });
 });
 
 // ── YIELDMAX: Fetch latest Group 1 and Group 2 from GlobeNewsWire ─
