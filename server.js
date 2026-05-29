@@ -11,20 +11,35 @@ const HEADERS = {
   'Accept': 'text/html,application/xhtml+xml',
 };
 
-// ── ROUNDHILL: GlobeNewswire ─────────────────────────────────────
+// ── ROUNDHILL: PRNewswire ────────────────────────────────────────
 app.get('/roundhill', async (req, res) => {
   try {
-    const gnwSearch = await fetch('https://www.globenewswire.com/en/search/keyword/Roundhill%20Investments%20Declares', {
+    const searchResp = await fetch('https://www.prnewswire.com/rss/news-releases-list.rss?category=roundhill', {
       headers: HEADERS, signal: AbortSignal.timeout(15000)
     });
-    const gnwHtml = await gnwSearch.text();
+    let articleUrl = null;
 
-    const linkMatch = gnwHtml.match(/href="(\/news-release\/\d{4}\/\d{2}\/\d{2}\/[^"]*roundhill[^"]*)">/i);
-    if (!linkMatch) {
-      return res.status(404).json({ error: 'No Roundhill declarations found on GlobeNewswire', etfs: [] });
+    if (searchResp.ok) {
+      const rssText = await searchResp.text();
+      const linkMatch = rssText.match(/<link>([^<]*roundhill[^<]*declares[^<]*)<\/link>/i)
+                     || rssText.match(/<link><!\[CDATA\[([^\]]*roundhill[^\]]*declares[^\]]*)\]\]><\/link>/i);
+      if (linkMatch) articleUrl = linkMatch[1];
     }
 
-    const articleUrl = 'https://www.globenewswire.com' + linkMatch[1];
+    // Fallback: search PRNewswire directly
+    if (!articleUrl) {
+      const searchPage = await fetch('https://www.prnewswire.com/news-releases/news-releases-list.html?company=roundhill', {
+        headers: HEADERS, signal: AbortSignal.timeout(15000)
+      });
+      const searchHtml = await searchPage.text();
+      const linkMatch = searchHtml.match(/href="(\/news-releases\/[^"]*roundhill[^"]*declares[^"]*\.html)"/i)
+                     || searchHtml.match(/href="(\/news-releases\/[^"]*roundhill[^"]*distribution[^"]*\.html)"/i);
+      if (linkMatch) articleUrl = 'https://www.prnewswire.com' + linkMatch[1];
+    }
+
+    if (!articleUrl) {
+      return res.status(404).json({ error: 'No Roundhill declarations found on PRNewswire', etfs: [] });
+    }
     const articleResp = await fetch(articleUrl, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
     const html = await articleResp.text();
 
@@ -68,7 +83,7 @@ app.get('/roundhill', async (req, res) => {
       return res.json({ count: gnwEtfs.length, etfs: gnwEtfs, sourceUrl: articleUrl });
     }
 
-    res.status(404).json({ error: 'No Roundhill declarations found on GlobeNewswire', etfs: [] });
+    res.status(404).json({ error: 'No Roundhill declarations found on PRNewswire', etfs: [] });
 
   } catch(e) {
     res.status(500).json({ error: e.message, etfs: [] });
