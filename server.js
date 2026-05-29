@@ -221,11 +221,12 @@ function parseDate(str) {
 app.get('/price/:ticker', async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
   try {
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${ticker}?interval=1d&range=1d&includePrePost=true`;
     const resp = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' }, signal: AbortSignal.timeout(8000) });
     const json = await resp.json();
-    const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice || null;
-    res.json({ ticker, price });
+    const meta  = json?.chart?.result?.[0]?.meta;
+    const price = meta?.postMarketPrice || meta?.preMarketPrice || meta?.regularMarketPrice || null;
+    res.json({ ticker, price, isExtended: !!(meta?.postMarketPrice || meta?.preMarketPrice) });
   } catch(e) {
     res.status(500).json({ ticker, price: null, error: e.message });
   }
