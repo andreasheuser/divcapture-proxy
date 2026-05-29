@@ -11,58 +11,8 @@ const HEADERS = {
   'Accept': 'text/html,application/xhtml+xml',
 };
 
-// ── ROUNDHILL: Cboe primary, GlobeNewswire fallback ──────────────
+// ── ROUNDHILL: GlobeNewswire ─────────────────────────────────────
 app.get('/roundhill', async (req, res) => {
-  const today = new Date();
-  const allEtfs = {};
-
-  // ── PRIMARY: Cboe scraper (last 14 days) ──
-  for (let daysBack = 0; daysBack <= 14; daysBack++) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - daysBack);
-    const dateStr = d.toISOString().split('T')[0];
-    const url = `https://www.cboe.com/us/equities/notices/dividends/details/?firm_name=Roundhill+Financial+Inc.&declaration_dt=${dateStr}`;
-
-    try {
-      const resp = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) });
-      const html = await resp.text();
-      const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
-
-      for (const row of rows) {
-        const cells = [...row[1].matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)]
-          .map(c => c[1].replace(/<[^>]+>/g, '').trim());
-        if (cells.length >= 6 && cells[0].match(/^[A-Z]{2,5}$/) && cells[2].match(/\d{4}-\d{2}-\d{2}/)) {
-          if (!allEtfs[cells[0]]) {
-            allEtfs[cells[0]] = {
-              ticker: cells[0], name: cells[1],
-              exDate: cells[2], recordDate: cells[3],
-              payableDate: cells[4], amount: parseFloat(cells[5].replace('$', '')),
-              declaredDate: dateStr,
-              source: 'cboe',
-            };
-          }
-        }
-      }
-    } catch(e) { continue; }
-    await new Promise(r => setTimeout(r, 100));
-  }
-
-  // If Cboe returned data, check freshness — if newest ex-date is > 7 days old, treat as stale
-  const cboeEtfs = Object.values(allEtfs);
-  if (cboeEtfs.length > 0) {
-    const now = new Date();
-    const newestEx = cboeEtfs.reduce((latest, e) => {
-      const d = new Date(e.exDate);
-      return d > latest ? d : latest;
-    }, new Date(0));
-    const daysSinceEx = (now - newestEx) / (1000 * 60 * 60 * 24);
-    if (daysSinceEx <= 7) {
-      return res.json({ count: cboeEtfs.length, etfs: cboeEtfs.sort((a,b) => a.ticker.localeCompare(b.ticker)) });
-    }
-    // Stale — fall through to GlobeNewswire
-  }
-
-  // ── FALLBACK: GlobeNewswire ──
   try {
     const gnwSearch = await fetch('https://www.globenewswire.com/en/search/keyword/Roundhill%20Investments%20Declares', {
       headers: HEADERS, signal: AbortSignal.timeout(15000)
@@ -71,7 +21,7 @@ app.get('/roundhill', async (req, res) => {
 
     const linkMatch = gnwHtml.match(/href="(\/news-release\/\d{4}\/\d{2}\/\d{2}\/[^"]*roundhill[^"]*)">/i);
     if (!linkMatch) {
-      return res.status(404).json({ error: 'No Roundhill declarations found in Cboe or GlobeNewswire', etfs: [] });
+      return res.status(404).json({ error: 'No Roundhill declarations found on GlobeNewswire', etfs: [] });
     }
 
     const articleUrl = 'https://www.globenewswire.com' + linkMatch[1];
@@ -88,11 +38,10 @@ app.get('/roundhill', async (req, res) => {
       return isNaN(d) ? null : d.toISOString().split('T')[0];
     };
 
-    const exDate      = parseDateStr(exMatch?.[1]);
-    const payableDate = parseDateStr(payMatch?.[1]);
-    const declaredDate= parseDateStr(declMatch?.[1]);
+    const exDate       = parseDateStr(exMatch?.[1]);
+    const payableDate  = parseDateStr(payMatch?.[1]);
+    const declaredDate = parseDateStr(declMatch?.[1]);
 
-    // Parse ticker/amount rows from the article table
     const gnwEtfs = [];
     const rows = [...html.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)];
     for (const row of rows) {
@@ -119,7 +68,7 @@ app.get('/roundhill', async (req, res) => {
       return res.json({ count: gnwEtfs.length, etfs: gnwEtfs, sourceUrl: articleUrl });
     }
 
-    res.status(404).json({ error: 'No Roundhill declarations found in Cboe or GlobeNewswire', etfs: [] });
+    res.status(404).json({ error: 'No Roundhill declarations found on GlobeNewswire', etfs: [] });
 
   } catch(e) {
     res.status(500).json({ error: e.message, etfs: [] });
