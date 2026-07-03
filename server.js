@@ -105,26 +105,37 @@ app.get('/yieldmax', async (req, res) => {
   }
 });
 
-// ── NEOS: Fetch latest monthly distribution from GlobeNewsWire ───
+// ── NEOS: Fetch latest monthly distribution from BusinessWire ────
 app.get('/neos', async (req, res) => {
   try {
-    const gnwSearch = await fetch('https://www.globenewswire.com/en/search/keyword/NEOS%20Investments%20Announces', {
+    // Search BusinessWire for latest NEOS announcement
+    const searchResp = await fetch('https://www.businesswire.com/rss/home/?rss=G22&rssid=20090908882174', {
       headers: HEADERS, signal: AbortSignal.timeout(15000)
     });
-    const gnwHtml = await gnwSearch.text();
+    const rssText = await searchResp.text();
 
-    const linkMatch = gnwHtml.match(/href="(\/news-release\/\d{4}\/\d{2}\/\d{2}\/[^"]*neos[^"]*)">/i);
-    if (!linkMatch) {
-      return res.json({ error: 'No NEOS announcement found', etfs: [] });
+    // Find NEOS distribution announcement link
+    const linkMatch = rssText.match(/<link>([^<]*NEOS-Investments-Announces[^<]*ETF[^<]*)<\/link>/i)
+                   || rssText.match(/<link><![CDATA[([^\]]*NEOS-Investments-Announces[^\]]*ETF[^\]]*)]]+><\/link>/i);
+
+    let articleUrl = linkMatch ? linkMatch[1].trim() : null;
+
+    // Fallback: search BusinessWire newsroom directly
+    if (!articleUrl) {
+      const bwSearch = await fetch('https://www.businesswire.com/newsroom/finance/?keyword=NEOS+Investments+Announces', {
+        headers: HEADERS, signal: AbortSignal.timeout(15000)
+      });
+      const bwHtml = await bwSearch.text();
+      const hrefMatch = bwHtml.match(/href="(\/news\/home\/\d+\/en\/NEOS-Investments-Announces[^"]*ETF[^"]*)"/i);
+      if (hrefMatch) articleUrl = 'https://www.businesswire.com' + hrefMatch[1];
     }
 
-    const articleUrl = 'https://www.globenewswire.com' + linkMatch[1];
+    if (!articleUrl) {
+      return res.json({ error: 'No NEOS announcement found on BusinessWire', etfs: [] });
+    }
+
     const articleResp = await fetch(articleUrl, { headers: HEADERS, signal: AbortSignal.timeout(15000) });
     const html = await articleResp.text();
-
-    const exMatch   = html.match(/[Ee]x[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
-    const payMatch  = html.match(/[Pp]ay(?:able|ment)?[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
-    const declMatch = html.match(/[Dd]eclar(?:ed|ation)[.\-\s]*[Dd]ate[:\s]+([A-Za-z]+ \d{1,2},?\s*\d{4})/);
 
     const parseDateStr = (s) => {
       if (!s) return null;
@@ -132,19 +143,32 @@ app.get('/neos', async (req, res) => {
       return isNaN(d) ? null : d.toISOString().split('T')[0];
     };
 
+    // Parse table rows: ticker in bold/cell, then amount column "$X.XXXX"
     const etfs = [];
     const tickers = ['SPYI','QQQI','IWMI','QQQH','BTCI','HYBI','BNDI','CSHI','TLTI','IYRI','SPYH','IAUI','NIHI','NEHI','NLSI','MLPI','XSPI','XQQI','XBCI'];
+    
+    // BusinessWire table format: ticker appears in bold inside cell, amount in next cells
+    // Pattern: TICKER ... $X.XXXX ... Ex-Dividend Date
     tickers.forEach(ticker => {
-      const re = new RegExp(ticker + '[\\s\\S]{1,80}?\\$?\\s*(\\d+\\.\\d+)', 'i');
+      // Look for ticker followed by dollar amount within ~300 chars
+      const re = new RegExp('\\b' + ticker + '\\b[\\s\\S]{1,300}?\\$?(\\d+\\.\\d{4})', 'i');
       const m = html.match(re);
-      if (m) etfs.push({ ticker, amount: parseFloat(m[1]) });
+      if (m) {
+        // Also grab ex-date for this ticker (format: M/D/YYYY or Month D, YYYY)
+        const exRe = new RegExp('\\b' + ticker + '\\b[\\s\\S]{1,400}?(\\d{1,2}\\/\\d{1,2}\\/\\d{4})', 'i');
+        const exM = html.match(exRe);
+        const exDate = exM ? parseDateStr(exM[1]) : null;
+        etfs.push({ ticker, amount: parseFloat(m[1]), exDate });
+      }
     });
 
+    // Get declaration date from article publish date
+    const declMatch = html.match(/(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}/);
+    const declDate = declMatch ? parseDateStr(declMatch[0]) : null;
+
     res.json({
-      exDate:    parseDateStr(exMatch?.[1]),
-      payDate:   parseDateStr(payMatch?.[1]),
-      declDate:  parseDateStr(declMatch?.[1]),
       etfs,
+      declDate,
       sourceUrl: articleUrl,
     });
 
