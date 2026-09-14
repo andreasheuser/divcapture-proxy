@@ -20,7 +20,7 @@ app.get('/roundhill', async (req, res) => {
     const d = new Date(today);
     d.setDate(d.getDate() - daysBack);
     const dateStr = d.toISOString().split('T')[0];
-    const url = `https://www.cboe.com/us/equities/notices/dividends/details/?firm_name=Roundhill+Financial+Inc.&declaration_dt=${dateStr}`;
+    const url = `https://www.cboe.com/us/equities/notices/dividends/details/?declaration_dt=${dateStr}&firm_name=Roundhill+Financial+Inc.`;
 
     try {
       const resp = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(8000) });
