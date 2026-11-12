@@ -158,7 +158,7 @@ app.get('/neos', async (req, res) => {
 
     // Find NEOS distribution announcement link
     const linkMatch = rssText.match(/<link>([^<]*NEOS-Investments-Announces[^<]*ETF[^<]*)<\/link>/i)
-                   || rssText.match(/<link><![CDATA[([^\]]*NEOS-Investments-Announces[^\]]*ETF[^\]]*)]]+><\/link>/i);
+                   || rssText.match(/CDATA\[([^\]]*NEOS-Investments-Announces[^\]]*ETF[^\]]*)\]/i);
 
     let articleUrl = linkMatch ? linkMatch[1].trim() : null;
 
