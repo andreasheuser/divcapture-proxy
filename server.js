@@ -57,17 +57,60 @@ app.get('/roundhill', async (req, res) => {
 // ── YIELDMAX: Fetch latest Group 1 and Group 2 from GlobeNewsWire ─
 app.get('/yieldmax', async (req, res) => {
   try {
-    const tagPage = await fetch('https://www.globenewswire.com/search/tag/yieldmax', {
-      headers: HEADERS, signal: AbortSignal.timeout(10000)
-    });
-    const tagHtml = await tagPage.text();
+    // ── Discover article URLs from multiple sources ──────────────────
+    const candidateUrls = new Set();
 
-    const urlMatches = [...tagHtml.matchAll(/href="(\/news-release\/202[0-9]\/\d{2}\/\d{2}\/[^"]*yieldmax[^"]*group[^"]*etfs[^"]*\.html)"/gi)];
-    const urls = [...new Set(urlMatches.map(m => 'https://www.globenewswire.com' + m[1]))];
+    // Source 1: GlobeNewswire tag page (try both old and new URL patterns)
+    const tagSources = [
+      'https://www.globenewswire.com/search/tag/yieldmax',
+      'https://www.globenewswire.com/en/search/keyword/YieldMax%20distributions',
+    ];
+    for (const src of tagSources) {
+      try {
+        const r = await fetch(src, { headers: HEADERS, signal: AbortSignal.timeout(10000) });
+        const html = await r.text();
+        // Match both href="..." and data-href="..." and JSON-encoded URLs
+        const hits = [...html.matchAll(/(?:href|data-href)="(\/news-release\/202[0-9]\/\d{2}\/\d{2}\/[^"]*yieldmax[^"]*(?:group|distrib)[^"]*\.html)"/gi)];
+        hits.forEach(m => candidateUrls.add('https://www.globenewswire.com' + m[1]));
+        // Also match URLs embedded as plain text / JSON (GNW SPA apps encode as escaped strings)
+        const hits2 = [...html.matchAll(/\\u002F(news-release\\u002F202[0-9]\\u002F\d{2}\\u002F\d{2}\\u002F[^"\\]*yieldmax[^"\\]*group[^"\\]*\.html)/gi)];
+        hits2.forEach(m => candidateUrls.add('https://www.globenewswire.com/' + m[1].replace(/\\u002F/g, '/')));
+      } catch(e) { /* try next */ }
+    }
 
+    // Source 2: GlobeNewswire RSS for YieldMax
+    try {
+      const rss = await fetch('https://www.globenewswire.com/RssFeed/company/yieldmax', {
+        headers: HEADERS, signal: AbortSignal.timeout(10000)
+      });
+      const rssText = await rss.text();
+      const rssHits = [...rssText.matchAll(/<link>([^<]*yieldmax[^<]*group[^<]*)<\/link>/gi)];
+      rssHits.forEach(m => candidateUrls.add(m[1].trim()));
+      // Also CDATA form
+      const rssHits2 = [...rssText.matchAll(/<link><!\[CDATA\[([^\]]*yieldmax[^\]]*group[^\]]*)\]\]>/gi)];
+      rssHits2.forEach(m => candidateUrls.add(m[1].trim()));
+    } catch(e) { /* skip */ }
+
+    // Source 3: Build candidate URLs for the last 14 days (Wed = ex-date day for YieldMax)
+    // GNW article IDs are numeric; we can't guess them, but the slug is predictable.
+    // Instead fetch the known GNW search endpoint for the org.
+    try {
+      const searchUrl = 'https://www.globenewswire.com/en/search/organization/yieldmax%20etfs?page=1';
+      const r = await fetch(searchUrl, { headers: HEADERS, signal: AbortSignal.timeout(10000) });
+      const html = await r.text();
+      const hits = [...html.matchAll(/(?:href|data-href)="(\/news-release\/202[0-9]\/\d{2}\/\d{2}\/[^"]*yieldmax[^"]*\.html)"/gi)];
+      hits.forEach(m => candidateUrls.add('https://www.globenewswire.com' + m[1]));
+      // JSON-encoded in SPA bundles
+      const hits2 = [...html.matchAll(/"(https:\\?\/\\?\/www\.globenewswire\.com\\?\/news-release\\?\/202[0-9][^"]*yieldmax[^"]*)"/gi)];
+      hits2.forEach(m => candidateUrls.add(m[1].replace(/\\\//g, '/').replace(/\\u002F/g, '/')));
+    } catch(e) { /* skip */ }
+
+    // ── Process each candidate article ──────────────────────────────
     const results = { group1: null, group2: null };
+    const urlList = [...candidateUrls];
 
-    for (const url of urls.slice(0, 10)) {
+    for (const url of urlList.slice(0, 15)) {
+      if (results.group1 && results.group2) break;
       try {
         const resp = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(10000) });
         const html = await resp.text();
@@ -79,7 +122,7 @@ app.get('/yieldmax', async (req, res) => {
         const etfs = parseDistributionTable(html, url);
         if (!etfs.length) continue;
 
-        const exMatch  = html.match(/Ex\.\s*&amp;\s*Record Date[:\s]*([A-Z][a-z]+ \d+,? \d{4}|\d{4}-\d{2}-\d{2})/i);
+        const exMatch  = html.match(/Ex\.\s*(?:&amp;|&)\s*Record Date[:\s]*([A-Z][a-z]+ \d+,? \d{4}|\d{4}-\d{2}-\d{2})/i);
         const payMatch = html.match(/Payment Date[:\s]*([A-Z][a-z]+ \d+,? \d{4}|\d{4}-\d{2}-\d{2})/i);
         const exDate   = exMatch  ? parseDate(exMatch[1])  : null;
         const payDate  = payMatch ? parseDate(payMatch[1]) : null;
@@ -87,9 +130,7 @@ app.get('/yieldmax', async (req, res) => {
         const data = { etfs, exDate, payDate, url, isUpdate };
 
         if (isGroup1 && (!results.group1 || isUpdate)) results.group1 = data;
-        if (isGroup2 && !results.group2) results.group2 = data;
-
-        if (results.group1 && results.group2) break;
+        if (isGroup2 && (!results.group2 || isUpdate)) results.group2 = data;
       } catch(e) { continue; }
       await new Promise(r => setTimeout(r, 200));
     }
@@ -97,6 +138,7 @@ app.get('/yieldmax', async (req, res) => {
     res.json({
       group1: results.group1,
       group2: results.group2,
+      candidateCount: urlList.length,
       fetchedAt: new Date().toISOString()
     });
 
